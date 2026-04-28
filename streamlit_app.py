@@ -2,112 +2,90 @@ import streamlit as st
 import pandas as pd
 import io
 
+def clean_column_names(df):
+    """Hàm tự động làm sạch tên cột: xóa khoảng trắng thừa, viết thường"""
+    df.columns = [str(col).strip() for col in df.columns]
+    return df
+
 def full_cross_check(df_bom, df_xy):
     errors = []
     
-    # Định nghĩa tên cột
-    COL_BOM_DESC = " Mô tả/Yêu cầu kỹ thuật"
-    COL_BOM_POS = "Vị trí VTLK"
-    COL_BOM_QTY = "Số lượng"
-    
-    COL_XY_DESIG = "Designator"
-    COL_XY_DESC = "Description"
+    # Làm sạch tên cột ngay khi bắt đầu
+    df_bom = clean_column_names(df_bom)
+    df_xy = clean_column_names(df_xy)
 
-    # Tập hợp tất cả các vị trí được nhắc đến trong BOM để kiểm tra chiều ngược lại
+    # Tìm tên cột chính xác (không sợ thừa thiếu khoảng trắng)
+    col_bom_desc = next((c for c in df_bom.columns if "Mô tả" in c), None)
+    col_bom_pos = next((c for c in df_bom.columns if "Vị trí" in c), None)
+    col_bom_qty = next((c for c in df_bom.columns if "Số lượng" in c), None)
+    
+    col_xy_desig = next((c for c in df_xy.columns if "Designator" in c), None)
+    col_xy_desc = next((c for c in df_xy.columns if "Description" in c), None)
+
+    if not all([col_bom_desc, col_bom_pos, col_bom_qty, col_xy_desig, col_xy_desc]):
+        return "Lỗi: Không tìm thấy các cột cần thiết trong file. Vui lòng kiểm tra lại tên cột BOM và XY Data."
+
     all_bom_positions = set()
 
-    # --- CHIỀU 1: KIỂM TRA TỪ BOM SANG XY DATA ---
+    # CHIỀU 1: BOM -> XY DATA
     for _, row in df_bom.iterrows():
-        # Bỏ qua dòng trống hoặc dòng tiêu đề nhóm
-        if pd.isna(row[COL_BOM_POS]) or str(row[COL_BOM_POS]).strip() == "" or "Tích hợp" in str(row[COL_BOM_POS]):
+        if pd.isna(row[col_bom_pos]) or str(row[col_bom_pos]).strip() == "" or "Tích hợp" in str(row[col_bom_pos]):
             continue
 
-        bom_desc = str(row[COL_BOM_DESC]).strip()
-        bom_qty = row[COL_BOM_QTY]
-        pos_list = [p.strip() for p in str(row[COL_BOM_POS]).replace(';', ',').split(',') if p.strip()]
-        
-        # Lưu vào tập hợp để đối chiếu chiều ngược lại
+        bom_desc = str(row[col_bom_desc]).strip()
+        bom_qty = row[col_bom_qty]
+        pos_list = [p.strip() for p in str(row[col_bom_pos]).replace(';', ',').split(',') if p.strip()]
         all_bom_positions.update(pos_list)
 
-        # 1.1 Kiểm tra số lượng nội bộ BOM
         if len(pos_list) != bom_qty:
-            errors.append({
-                "Vị trí/Đối tượng": row[COL_BOM_POS],
-                "Loại lỗi": "Sai lệch định mức BOM",
-                "Chi tiết": f"BOM ghi SL {bom_qty} nhưng đếm thực tế {len(pos_list)} vị trí."
-            })
+            errors.append({"Vị trí": row[col_bom_pos], "Lỗi": "Sai số lượng trong BOM", "Chi tiết": f"Ghi {bom_qty} nhưng đếm được {len(pos_list)}"})
 
-        # 1.2 Kiểm tra từng vị trí so với XY Data
         for pos in pos_list:
-            match_xy = df_xy[df_xy[COL_XY_DESIG] == pos]
-            
+            match_xy = df_xy[df_xy[col_xy_desig] == pos]
             if match_xy.empty:
-                errors.append({
-                    "Vị trí/Đối tượng": pos,
-                    "Loại lỗi": "Thiếu trong file XY DATA",
-                    "Chi tiết": f"Vị trí {pos} có trong BOM nhưng không tìm thấy trên tọa độ SMT."
-                })
+                errors.append({"Vị trí": pos, "Lỗi": "Thiếu trong XY Data", "Chi tiết": "Có trong BOM nhưng không có trong tọa độ SMT"})
             else:
-                xy_desc = str(match_xy.iloc[0][COL_XY_DESC]).strip()
+                xy_desc = str(match_xy.iloc[0][col_xy_desc]).strip()
                 if bom_desc.lower() != xy_desc.lower():
-                    errors.append({
-                        "Vị trí/Đối tượng": pos,
-                        "Loại lỗi": "Sai khác Mô tả (Description)",
-                        "Chi tiết": f"BOM: '{bom_desc}' | XY: '{xy_desc}'"
-                    })
+                    errors.append({"Vị trí": pos, "Lỗi": "Sai khác mô tả", "Chi tiết": f"BOM: {bom_desc} | XY: {xy_desc}"})
 
-    # --- CHIỀU 2: KIỂM TRA TỪ XY DATA SANG BOM (Tìm linh kiện thừa) ---
+    # CHIỀU 2: XY DATA -> BOM
     for _, row in df_xy.iterrows():
-        xy_pos = str(row[COL_XY_DESIG]).strip()
+        xy_pos = str(row[col_xy_desig]).strip()
         if xy_pos not in all_bom_positions:
-            errors.append({
-                "Vị trí/Đối tượng": xy_pos,
-                "Loại lỗi": "Thừa trong file XY DATA",
-                "Chi tiết": f"Vị trí {xy_pos} có trong file tọa độ nhưng không có trong BOM sản xuất."
-            })
+            errors.append({"Vị trí": xy_pos, "Lỗi": "Thừa trong XY Data", "Chi tiết": "Vị trí này không có trong BOM sản xuất"})
 
     return pd.DataFrame(errors)
 
-# --- GIAO DIỆN STREAMLIT ---
-st.set_page_config(page_title="SMT BOM Checker Pro", layout="wide")
-st.title("Hệ thống đối soát dữ liệu SMT: BOM vs XY Data")
+# Giao diện
+st.set_page_config(page_title="SMT Checker", layout="wide")
+st.title("Hệ thống đối soát BOM & XY DATA")
 
 c1, c2 = st.columns(2)
 with c1:
-    file_bom = st.file_uploader("1. Upload file BOM", type=['xlsx', 'csv'])
+    file_bom = st.file_uploader("Upload BOM", type=['xlsx', 'csv'])
 with c2:
-    file_xy = st.file_uploader("2. Upload file XY DATA", type=['xlsx', 'csv'])
+    file_xy = st.file_uploader("Upload XY DATA", type=['xlsx', 'csv'])
 
 if file_bom and file_xy:
     try:
-        # Đọc dữ liệu
-        if file_bom.name.endswith('.csv'): df_bom = pd.read_csv(file_bom)
-        else: df_bom = pd.read_excel(file_bom)
+        # Đọc file (dùng bản sao byte để tránh lỗi file đang mở)
+        df_bom = pd.read_excel(file_bom) if file_bom.name.endswith('.xlsx') else pd.read_csv(file_bom)
+        df_xy = pd.read_excel(file_xy) if file_xy.name.endswith('.xlsx') else pd.read_csv(file_xy)
         
-        if file_xy.name.endswith('.csv'): df_xy = pd.read_csv(file_xy)
-        else: df_xy = pd.read_excel(file_xy)
-        
-        if st.button("🚀 Bắt đầu đối soát 2 chiều"):
-            result_df = full_cross_check(df_bom, df_xy)
-            
-            if result_df.empty:
-                st.success("🎉 Tuyệt vời! Hai file hoàn toàn khớp nhau (không thừa, không thiếu, đúng mô tả).")
+        if st.button("Bắt đầu đối soát"):
+            result = full_cross_check(df_bom, df_xy)
+            if isinstance(result, str):
+                st.error(result)
+            elif result.empty:
+                st.success("✅ Dữ liệu khớp 100%!")
             else:
-                st.warning(f"🚩 Phát hiện {len(result_df)} điểm bất thường.")
+                st.warning(f" tìm thấy {len(result)} lỗi")
+                st.dataframe(result, use_container_width=True)
                 
-                # Phân loại lỗi để người dùng dễ quan sát
-                st.dataframe(result_df, use_container_width=True)
-                
-                # Xuất file báo cáo
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    result_df.to_excel(writer, index=False, sheet_name='Report')
-                
-                st.download_button(
-                    label="📥 Tải báo cáo lỗi chi tiết",
-                    data=output.getvalue(),
-                    file_name="Bao_cao_doi_soat_SMT.xlsx",
-                    mime="application/vnd.ms-excel"
-                )
+                    result.to_excel(writer, index=False)
+                st.download_button("Tải báo cáo lỗi", output.getvalue(), "Loi_SMT.xlsx")
     except Exception as e:
-        st.error(f"Lỗi hệ thống: {e}")
+        st.error(f"Lỗi: {e}")
