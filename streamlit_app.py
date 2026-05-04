@@ -3,7 +3,7 @@ import pandas as pd
 import io
 import re
 
-# 1. Các hàm xử lý dữ liệu lõi
+# 1. Hàm làm sạch chuỗi cực mạnh
 def super_clean(text):
     """Xóa tất cả ký tự đặc biệt, dấu cách để so sánh lõi"""
     if pd.isna(text): return ""
@@ -23,25 +23,16 @@ def get_values(row, keywords, exclude_keywords=None):
     vals = set()
     for col in row.index:
         col_name = str(col).lower()
+        # Kiểm tra xem tên cột có chứa từ khóa cần tìm không
         if any(k.lower() in col_name for k in keywords):
+            # KIỂM TRA LOẠI TRỪ: Nếu tên cột chứa từ khóa loại trừ thì bỏ qua
             if exclude_keywords and any(ex.lower() in col_name for ex in exclude_keywords):
                 continue
+            
             v = str(row[col]).strip()
             if v and v.lower() not in ['nan', 'na', 'none', '0', '']:
                 vals.add(v.upper())
     return vals
-
-def get_correct_df(file, sheet_name=None):
-    """Tự động tìm dòng chứa tiêu đề (Row 0, 1 hoặc 2...)"""
-    df_preview = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=10)
-    header_row = 0
-    for i, row in df_preview.iterrows():
-        row_str = " ".join([str(x) for x in row.values])
-        # Tìm dòng có chứa các từ khóa tiêu chuẩn
-        if any(k in row_str for k in ["Mô tả", "Vị trí", "Designator", "Description"]):
-            header_row = i
-            break
-    return pd.read_excel(file, sheet_name=sheet_name, header=header_row)
 
 def full_cross_check(df_bom, df_xy):
     errors = []
@@ -53,15 +44,12 @@ def full_cross_check(df_bom, df_xy):
     c_xy_desig = find_column(df_xy, ["Designator", "Vị trí"])
     c_xy_desc = find_column(df_xy, ["Description", "Mô tả"])
 
-    # Kiểm tra cột thiếu (Sửa lỗi hiển thị [] trống)
-    missing = []
-    if not c_bom_desc: missing.append("Mô tả (BOM)")
-    if not c_bom_pos: missing.append("Vị trí (BOM)")
-    if not c_bom_qty: missing.append("Số lượng (BOM)")
-    if not c_xy_desig: missing.append("Designator (XY)")
-    
-    if missing:
-        return f"Lỗi: Không tìm thấy các cột {missing} trong file đã chọn. Hãy kiểm tra lại dòng tiêu đề."
+    if not all([c_bom_desc, c_bom_pos, c_bom_qty, c_xy_desig, c_xy_desc]):
+        missing = []
+        if not c_bom_desc: missing.append("Mô tả (BOM)")
+        if not c_bom_pos: missing.append("Vị trí (BOM)")
+        if not c_bom_qty: missing.append("Số lượng (BOM)")
+        return f"Lỗi: Không tìm thấy các cột {missing} trong Sheet đã chọn."
 
     all_bom_pos = {}
 
@@ -77,7 +65,10 @@ def full_cross_check(df_bom, df_xy):
         except:
             qty = 0
             
+        # P/N của BOM: Lấy các cột P/N, Part Number
         pns = get_values(row, ["P/N", "Part Number"])
+        
+        # Hãng của BOM: Lấy các cột Hãng, Manufacturer nhưng LOẠI TRỪ các cột có chữ P/N, Part
         mfrs = get_values(row, ["Hãng", "Manufacturer"], exclude_keywords=["Part Number", "P/N", "PN"])
         
         pos_list = [p.strip() for p in pos_raw.replace(';', ',').split(',') if p.strip()]
@@ -107,21 +98,23 @@ def full_cross_check(df_bom, df_xy):
             cur_errs = []
             err_types = []
             
-            # 1. Check Mô tả (Chỉ check nếu file XY có cột Mô tả)
-            if c_xy_desc and super_clean(info['desc']) != super_clean(xy_row[c_xy_desc]):
-                cur_errs.append(f"Mô tả lệch")
+            # 1. Check Mô tả
+            if super_clean(info['desc']) != super_clean(xy_row[c_xy_desc]):
+                cur_errs.append(f"Mô tả: BOM '{info['desc']}' vs XY '{xy_row[c_xy_desc]}'")
                 err_types.append("Mô tả")
             
-            # 2. Check P/N
+            # 2. Check P/N (So khớp P/N - P/N)
+            # Lấy tất cả cột có chữ P/N hoặc Part trong file XY
             xy_pns = get_values(xy_row, ["P/N", "Part Number"])
             if info['pns'] and xy_pns and not (info['pns'] & xy_pns):
-                cur_errs.append(f"P/N BOM {info['pns']} vs XY {xy_pns}")
+                cur_errs.append(f"P/N: BOM {info['pns']} vs XY {xy_pns}")
                 err_types.append("P/N")
                 
-            # 3. Check Hãng
+            # 3. Check Hãng (So khớp Hãng - Hãng)
+            # Lấy cột Hãng trong XY nhưng LOẠI TRỪ nếu tên cột đó chứa chữ Part/PN
             xy_mfrs = get_values(xy_row, ["Hãng", "Manufacturer"], exclude_keywords=["Part Number", "P/N", "PN"])
             if info['mfrs'] and xy_mfrs and not (info['mfrs'] & xy_mfrs):
-                cur_errs.append(f"Hãng BOM {info['mfrs']} vs XY {xy_mfrs}")
+                cur_errs.append(f"Hãng: BOM {info['mfrs']} vs XY {xy_mfrs}")
                 err_types.append("Hãng")
 
             if cur_errs:
@@ -154,16 +147,14 @@ df_bom = None
 if f_bom:
     xls_bom = pd.ExcelFile(f_bom)
     sheet_bom = st.selectbox("Chọn Sheet chứa dữ liệu BOM:", xls_bom.sheet_names, index=0)
-    # Sửa: Sử dụng get_correct_df để tự tìm dòng tiêu đề
-    df_bom = get_correct_df(f_bom, sheet_name=sheet_bom)
+    df_bom = pd.read_excel(f_bom, sheet_name=sheet_bom)
 
 f_xys = st.file_uploader("2. Tải lên (các) file XY DATA", type=['xlsx'], accept_multiple_files=True)
 df_xy = None
 if f_xys:
     list_xy = []
     for f in f_xys:
-        # Sửa: Sử dụng get_correct_df để đảm bảo tìm đúng tiêu đề trong file XY
-        t = get_correct_df(f)
+        t = pd.read_excel(f)
         t["File Nguồn"] = f.name
         list_xy.append(t)
     df_xy = pd.concat(list_xy, ignore_index=True)
