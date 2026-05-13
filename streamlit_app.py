@@ -23,9 +23,7 @@ def get_values(row, keywords, exclude_keywords=None):
     vals = set()
     for col in row.index:
         col_name = str(col).lower()
-        # Kiểm tra xem tên cột có chứa từ khóa cần tìm không
         if any(k.lower() in col_name for k in keywords):
-            # KIỂM TRA LOẠI TRỪ: Nếu tên cột chứa từ khóa loại trừ thì bỏ qua
             if exclude_keywords and any(ex.lower() in col_name for ex in exclude_keywords):
                 continue
             
@@ -52,6 +50,9 @@ def full_cross_check(df_bom, df_xy):
         return f"Lỗi: Không tìm thấy các cột {missing} trong Sheet đã chọn."
 
     all_bom_pos = {}
+    
+    # --- PHẦN THÊM MỚI: THEO DÕI TRÙNG P/N TRONG BOM ---
+    pn_tracker = {} # Lưu {Mã_PN: [Danh sách các dòng/vị trí chứa mã đó]}
 
     # --- DUYỆT FILE BOM ---
     for _, row in df_bom.iterrows():
@@ -68,7 +69,13 @@ def full_cross_check(df_bom, df_xy):
         # P/N của BOM: Lấy các cột P/N, Part Number
         pns = get_values(row, ["P/N", "Part Number"])
         
-        # Hãng của BOM: Lấy các cột Hãng, Manufacturer nhưng LOẠI TRỪ các cột có chữ P/N, Part
+        # --- LOGIC KIỂM TRA TRÙNG P/N ---
+        for pn in pns:
+            if pn not in pn_tracker:
+                pn_tracker[pn] = []
+            pn_tracker[pn].append(pos_raw)
+        
+        # Hãng của BOM
         mfrs = get_values(row, ["Hãng", "Manufacturer"], exclude_keywords=["Part Number", "P/N", "PN"])
         
         pos_list = [p.strip() for p in pos_raw.replace(';', ',').split(',') if p.strip()]
@@ -80,6 +87,16 @@ def full_cross_check(df_bom, df_xy):
                 "Vị trí": pos_raw,
                 "Loại lỗi": "Sai SL BOM",
                 "Chi tiết": f"BOM ghi {qty} nhưng liệt kê {len(pos_list)} vị trí",
+                "Nguồn": "File BOM"
+            })
+
+    # --- SAU KHI DUYỆT BOM, KIỂM TRA XEM CÓ P/N NÀO XUẤT HIỆN Ở NHIỀU DÒNG KHÔNG ---
+    for pn, occurrences in pn_tracker.items():
+        if len(occurrences) > 1:
+            errors.append({
+                "Vị trí": "Nhiều dòng",
+                "Loại lỗi": "Trùng P/N trong BOM",
+                "Chi tiết": f"Mã P/N '{pn}' bị khai báo tách rời ở các cụm vị trí: {'; '.join(occurrences)}",
                 "Nguồn": "File BOM"
             })
 
@@ -103,15 +120,13 @@ def full_cross_check(df_bom, df_xy):
                 cur_errs.append(f"Mô tả: BOM '{info['desc']}' vs XY '{xy_row[c_xy_desc]}'")
                 err_types.append("Mô tả")
             
-            # 2. Check P/N (So khớp P/N - P/N)
-            # Lấy tất cả cột có chữ P/N hoặc Part trong file XY
+            # 2. Check P/N
             xy_pns = get_values(xy_row, ["P/N", "Part Number"])
             if info['pns'] and xy_pns and not (info['pns'] & xy_pns):
                 cur_errs.append(f"P/N: BOM {info['pns']} vs XY {xy_pns}")
                 err_types.append("P/N")
                 
-            # 3. Check Hãng (So khớp Hãng - Hãng)
-            # Lấy cột Hãng trong XY nhưng LOẠI TRỪ nếu tên cột đó chứa chữ Part/PN
+            # 3. Check Hãng
             xy_mfrs = get_values(xy_row, ["Hãng", "Manufacturer"], exclude_keywords=["Part Number", "P/N", "PN"])
             if info['mfrs'] and xy_mfrs and not (info['mfrs'] & xy_mfrs):
                 cur_errs.append(f"Hãng: BOM {info['mfrs']} vs XY {xy_mfrs}")
