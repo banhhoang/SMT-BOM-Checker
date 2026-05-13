@@ -28,8 +28,16 @@ def get_values(row, keywords, exclude_keywords=None):
                 continue
             
             v = str(row[col]).strip()
-            if v and v.lower() not in ['nan', 'na', 'none', '0', '']:
-                vals.add(v.upper())
+            # Lọc giá trị rỗng hoặc mặc định
+            if not v or v.lower() in ['nan', 'na', 'none', '0', '']:
+                continue
+            
+            # --- PHẦN SỬA ĐỔI: Loại bỏ các chuỗi mẫu không phải P/N thật ---
+            # Nếu chuỗi nằm trong ngoặc < > và có chứa chữ "part number" thì bỏ qua
+            if v.startswith('<') and v.endswith('>') and "part number" in v.lower():
+                continue
+            
+            vals.add(v.upper())
     return vals
 
 def full_cross_check(df_bom, df_xy):
@@ -90,7 +98,7 @@ def full_cross_check(df_bom, df_xy):
                 "Nguồn": "File BOM"
             })
 
-    # --- SAU KHI DUYỆT BOM, KIỂM TRA XEM CÓ P/N NÀO XUẤT HIỆN Ở NHIỀU DÒNG KHÔNG ---
+    # --- KIỂM TRA P/N TRÙNG SAU KHI QUÉT XONG ---
     for pn, occurrences in pn_tracker.items():
         if len(occurrences) > 1:
             errors.append({
@@ -115,18 +123,15 @@ def full_cross_check(df_bom, df_xy):
             cur_errs = []
             err_types = []
             
-            # 1. Check Mô tả
             if super_clean(info['desc']) != super_clean(xy_row[c_xy_desc]):
                 cur_errs.append(f"Mô tả: BOM '{info['desc']}' vs XY '{xy_row[c_xy_desc]}'")
                 err_types.append("Mô tả")
             
-            # 2. Check P/N
             xy_pns = get_values(xy_row, ["P/N", "Part Number"])
             if info['pns'] and xy_pns and not (info['pns'] & xy_pns):
                 cur_errs.append(f"P/N: BOM {info['pns']} vs XY {xy_pns}")
                 err_types.append("P/N")
                 
-            # 3. Check Hãng
             xy_mfrs = get_values(xy_row, ["Hãng", "Manufacturer"], exclude_keywords=["Part Number", "P/N", "PN"])
             if info['mfrs'] and xy_mfrs and not (info['mfrs'] & xy_mfrs):
                 cur_errs.append(f"Hãng: BOM {info['mfrs']} vs XY {xy_mfrs}")
