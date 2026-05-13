@@ -102,7 +102,7 @@ def full_cross_check(df_bom, df_xy):
     for pn, occurrences in pn_tracker.items():
         if len(occurrences) > 1:
             errors.append({
-                "Vị trí": "Nhiều dòng",
+                "Vị trí": "Trùng P/N",
                 "Loại lỗi": "Trùng P/N trong BOM",
                 "Chi tiết": f"Mã P/N '{pn}' bị khai báo tách rời ở các cụm vị trí: {'; '.join(occurrences)}",
                 "Nguồn": "File BOM"
